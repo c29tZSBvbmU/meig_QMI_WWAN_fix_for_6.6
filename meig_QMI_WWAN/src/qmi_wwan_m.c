@@ -45,7 +45,7 @@
  * commands on a serial interface
  */
  
- #if 1
+#if 1
 //Added by zhangqingyun@meigsmart.com always need if not dhcp can't get ip address
 struct sk_buff *qmi_wwan_tx_fixup(struct usbnet *dev, struct sk_buff *skb, gfp_t flags)
 {
@@ -168,6 +168,7 @@ static const struct net_device_ops qmi_wwan_netdev_ops = {
 	.ndo_start_xmit		= usbnet_start_xmit,
 	.ndo_tx_timeout		= usbnet_tx_timeout,
 	.ndo_change_mtu		= usbnet_change_mtu,
+	.ndo_get_stats64        = dev_get_tstats64,  // 修复：使用新的统计函数
 	.ndo_set_mac_address	= qmi_wwan_mac_addr,
 	.ndo_validate_addr	= eth_validate_addr,
 };
@@ -233,7 +234,7 @@ static int qmi_wwan_register_subdriver(struct usbnet *dev)
 
 	/* register subdriver */
 	subdriver = usb_cdc_wdm_register(info->control, &dev->status->desc,
-					 4096, &qmi_wwan_cdc_wdm_manage_power);
+					 4096, qmi_wwan_cdc_wdm_manage_power);  // 修复：移除&操作符
 	if (IS_ERR(subdriver)) {
 		dev_err(&info->control->dev, "subdriver registration failed\n");
 		rv = PTR_ERR(subdriver);
@@ -268,7 +269,7 @@ static int qmi_wwan_bind(struct usbnet *dev, struct usb_interface *intf)
 	/* set up initial state */
 	info->control = intf;
 	info->data = intf;
-        
+        /*add by zhangqingyun@meigsmart.com begin*/
 	/* and a number of CDC descriptors */
 	while (len > 3) {
 		struct usb_descriptor_header *h = (void *)buf;
@@ -327,7 +328,7 @@ next_desc:
 		len -= h->bLength;
 		buf += h->bLength;
 	}
-
+        /*add by zhangqingyun@meigsmart.com end*/
 	/* Use separate control and data interfaces if we found a CDC Union */
 	if (cdc_union) {
 		info->data = usb_ifnum_to_if(dev->udev,
@@ -373,6 +374,10 @@ next_desc:
 		dev->net->dev_addr[0] &= 0xbf;	/* clear "IP" bit */
 	}
 	dev->net->netdev_ops = &qmi_wwan_netdev_ops;
+	// 修复：添加统计结构初始化
+	dev->net->pcpu_stat_type = NETDEV_PCPU_STAT_TSTATS;
+
+	//dev->rx_urb_size = 7600;
 
 #if 1 //Added by zhangqingyun@meigsmart.com
 	if (dev->udev->descriptor.idVendor == cpu_to_le16(0x2C7C) ||
@@ -498,17 +503,6 @@ static const struct driver_info	qmi_wwan_info = {
 
 static const struct usb_device_id products[] = {
 #if 1 //Added by Quectel
-#ifndef QMI_FIXED_INTF
-/* map QMI/wwan function by a fixed interface number */
-#define QMI_FIXED_INTF(vend, prod, num) \
-		.match_flags = USB_DEVICE_ID_MATCH_DEVICE | USB_DEVICE_ID_MATCH_INT_INFO, \
-		.idVendor = vend, \
-		.idProduct = prod, \
-		.bInterfaceClass = 0xff, \
-		.bInterfaceSubClass = 0xff, \
-		.bInterfaceProtocol = 0xff, \
-		.driver_info = (unsigned long)&qmi_wwan_force_int##num,
-#endif
 	{ QMI_FIXED_INTF(0x2C7C, 0x0125, 4) }, /* Quectel EC25/EC20 R2.0 */
 	{ QMI_FIXED_INTF(0x2C7C, 0x0121, 4) }, /* Quectel EC21 */
 	{ QMI_FIXED_INTF(0x05c6, 0xf601, 5) }, /* MeigLink SLM750 SLM730 SLM750VR2.0*/
