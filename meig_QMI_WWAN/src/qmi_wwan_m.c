@@ -69,7 +69,6 @@ struct sk_buff *qmi_wwan_tx_fixup(struct usbnet *dev, struct sk_buff *skb, gfp_t
 	return NULL;
 }
 #endif
-#include <linux/version.h>
 
 #define VERSION_NUMBER "V1.0.1"
 #define MEIG_WWAN_VERSION "Meig_QMI_WWAN_Driver_"VERSION_NUMBER
@@ -169,7 +168,6 @@ static const struct net_device_ops qmi_wwan_netdev_ops = {
 	.ndo_start_xmit		= usbnet_start_xmit,
 	.ndo_tx_timeout		= usbnet_tx_timeout,
 	.ndo_change_mtu		= usbnet_change_mtu,
-//	.ndo_get_stats64        = usbnet_get_stats64,
 	.ndo_set_mac_address	= qmi_wwan_mac_addr,
 	.ndo_validate_addr	= eth_validate_addr,
 };
@@ -270,7 +268,7 @@ static int qmi_wwan_bind(struct usbnet *dev, struct usb_interface *intf)
 	/* set up initial state */
 	info->control = intf;
 	info->data = intf;
-        /*add by zhangqingyun@meigsmart.com begain
+        
 	/* and a number of CDC descriptors */
 	while (len > 3) {
 		struct usb_descriptor_header *h = (void *)buf;
@@ -329,7 +327,7 @@ next_desc:
 		len -= h->bLength;
 		buf += h->bLength;
 	}
-        /*add by zhangqingyun@meigsmart.com end*/
+
 	/* Use separate control and data interfaces if we found a CDC Union */
 	if (cdc_union) {
 		info->data = usb_ifnum_to_if(dev->udev,
@@ -375,8 +373,6 @@ next_desc:
 		dev->net->dev_addr[0] &= 0xbf;	/* clear "IP" bit */
 	}
 	dev->net->netdev_ops = &qmi_wwan_netdev_ops;
-
-	//dev->rx_urb_size = 7600;
 
 #if 1 //Added by zhangqingyun@meigsmart.com
 	if (dev->udev->descriptor.idVendor == cpu_to_le16(0x2C7C) ||
