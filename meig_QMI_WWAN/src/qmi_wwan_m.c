@@ -20,38 +20,8 @@
 #include <linux/usb/usbnet.h>
 #include <linux/usb/cdc-wdm.h>
 #include <linux/version.h>
-#include <linux/pm.h>               /* MODIFIED FOR LINUX 6.6: add pm header for dev_pm_ops and PM helper macros */
-#include <linux/kernel.h>           /* general kernel helpers */
-
-/* This driver supports wwan (3G/LTE/?) devices using a vendor
- * specific management protocol called Qualcomm MSM Interface (QMI) - ... (omitted)
- */
-
-/* User custom tx_fixup (kept) */
-#if 1
-//Added by zhangqingyun@meigsmart.com always need if not dhcp can't get ip address
-struct sk_buff *qmi_wwan_tx_fixup(struct usbnet *dev, struct sk_buff *skb, gfp_t flags)
-{
-	if (dev->udev->descriptor.idVendor != cpu_to_le16(0x2C7C) &&
-	    dev->udev->descriptor.idVendor != cpu_to_le16(0x05c6) &&
-            dev->udev->descriptor.idVendor != cpu_to_le16(0x2dee)){
-                // dev_err(&dev->intf->dev,"zhangqingyun test 1");
-		return skb;
-            }
-	
-	// Skip Ethernet header from message
-	if (skb_pull(skb, ETH_HLEN)) {
-                // dev_err(&dev->intf->dev, "zhangqingyu test 2");
-		return skb;
-	} else {
-		dev_err(&dev->intf->dev, "Packet Dropped ");
-	}
-
-	// Filter the packet out, release it
-	dev_kfree_skb_any(skb);
-	return NULL;
-}
-#endif
+#include <linux/kernel.h>
+#include <linux/pm.h> /* for pm_message_t etc. */
 
 #define VERSION_NUMBER "V1.0.1"
 #define MEIG_WWAN_VERSION "Meig_QMI_WWAN_Driver_"VERSION_NUMBER
@@ -78,16 +48,42 @@ struct quec_net_package_header {
 	unsigned char reserve[16];
 } __packed;
 
+/* ------------------------------------------------------------------ */
+/* Keep the user's tx_fixup (original custom code)                     */
+/* ------------------------------------------------------------------ */
+#if 1
+//Added by zhangqingyun@meigsmart.com always need if not dhcp can't get ip address
+struct sk_buff *qmi_wwan_tx_fixup(struct usbnet *dev, struct sk_buff *skb, gfp_t flags)
+{
+	if (dev->udev->descriptor.idVendor != cpu_to_le16(0x2C7C) &&
+	    dev->udev->descriptor.idVendor != cpu_to_le16(0x05c6) &&
+            dev->udev->descriptor.idVendor != cpu_to_le16(0x2dee)){
+                // dev_err(&dev->intf->dev,"zhangqingyun test 1");
+		return skb;
+            }
+	
+	/* Skip Ethernet header from message */
+	if (skb_pull(skb, ETH_HLEN)) {
+                // dev_err(&dev->intf->dev, "zhangqingyu test 2");
+		return skb;
+	} else {
+		dev_err(&dev->intf->dev, "Packet Dropped ");
+	}
+
+	/* Filter the packet out, release it */
+	dev_kfree_skb_any(skb);
+	return NULL;
+}
+#endif
 
 static int qmi_wwan_rx_fixup(struct usbnet *dev, struct sk_buff *skb) {
 
 	__be16 proto;
 
-	/* this check is no longer done by usbnet (kept from original) */
+	/* this check is no longer done by usbnet */
 	if (skb->len < dev->net->hard_header_len) {
 		return 0;
 	}
-
 
 	switch (skb->data[0] & 0xf0) {
 	case 0x40:
@@ -115,7 +111,7 @@ static int qmi_wwan_rx_fixup(struct usbnet *dev, struct sk_buff *skb) {
 	skb_reset_mac_header(skb);
 	eth_hdr(skb)->h_proto = proto;
 	memset(eth_hdr(skb)->h_source, 0, ETH_ALEN);
-        /* add by zhangqingyun@meigsmart.com */
+	/* add by zhangqingyun@meigsmart.com */
 	memcpy(eth_hdr(skb)->h_source, "\x00\x11\x22\x33\x44\x55", ETH_ALEN);
 fix_dest:
 	memcpy(eth_hdr(skb)->h_dest, dev->net->dev_addr, ETH_ALEN);
@@ -179,6 +175,11 @@ static int qmi_wwan_manage_power(struct usbnet *dev, int on)
 	return 0;
 }
 
+/* This function used to be passed to usb_cdc_wdm_register in old APIs.
+ * We keep it for clarity, but current registration uses enum port type.
+ * (If you want to wire custom pm callbacks into cdc-wdm, additional
+ * steps may be needed depending on kernel headers.)
+ */
 static int qmi_wwan_cdc_wdm_manage_power(struct usb_interface *intf, int on)
 {
 	struct usbnet *dev = usb_get_intfdata(intf);
@@ -214,9 +215,21 @@ static int qmi_wwan_register_subdriver(struct usbnet *dev)
 	/* for subdriver power management */
 	atomic_set(&info->pmcount, 0);
 
-	/* register subdriver */
-	subdriver = usb_cdc_wdm_register(info->control, &dev->status->desc,
-					 4096, &qmi_wwan_cdc_wdm_manage_power);
+	/* register subdriver
+	 *
+	 * MODIFIED FOR LINUX 6.6:
+	 * Newer kernels' usb_cdc_wdm_register signature expects:
+	 *   (struct usb_interface *, struct usb_endpoint_descriptor *,
+	 *    int bufsize, enum wwan_port_type, struct module *)
+	 *
+	 * Previously code passed a manage_power callback pointer there.
+	 * Replace with WWAN_PORT_QMI and THIS_MODULE to match current API.
+	 */
+	subdriver = usb_cdc_wdm_register(info->control,
+					 &dev->status->desc,
+					 4096,
+					 WWAN_PORT_QMI, /* MODIFIED FOR LINUX 6.6 */
+					 THIS_MODULE); /* MODIFIED FOR LINUX 6.6 */
 	if (IS_ERR(subdriver)) {
 		dev_err(&info->control->dev, "subdriver registration failed\n");
 		rv = PTR_ERR(subdriver);
@@ -252,7 +265,7 @@ static int qmi_wwan_bind(struct usbnet *dev, struct usb_interface *intf)
 	info->control = intf;
 	info->data = intf;
         /*add by zhangqingyun@meigsmart.com begain
-	/* and a number of CDC descriptors */
+	 // and a number of CDC descriptors (MODIFIED: avoid nested /* ... */ comments) */
 	while (len > 3) {
 		struct usb_descriptor_header *h = (void *)buf;
 
@@ -352,8 +365,11 @@ next_desc:
 
 	/* make MAC addr easily distinguishable from an IP header */
 	if (possibly_iphdr(dev->net->dev_addr)) {
-		dev->net->dev_addr[0] |= 0x02;	/* set local assignment bit */
-		dev->net->dev_addr[0] &= 0xbf;	/* clear "IP" bit */
+		u8 tmp_addr[ETH_ALEN]; /* MODIFIED FOR LINUX 6.6: dev->net->dev_addr is read-only; copy, modify and set */
+		eth_hw_addr_copy(tmp_addr, dev->net->dev_addr); /* MODIFIED */
+		tmp_addr[0] |= 0x02;	/* set local assignment bit */ /* MODIFIED */
+		tmp_addr[0] &= 0xbf;	/* clear "IP" bit */ /* MODIFIED */
+		eth_hw_addr_set(dev->net, tmp_addr); /* MODIFIED */
 	}
 	dev->net->netdev_ops = &qmi_wwan_netdev_ops;
 
@@ -406,21 +422,12 @@ static void qmi_wwan_unbind(struct usbnet *dev, struct usb_interface *intf)
 	info->control = NULL;
 }
 
-/* ------------------------------------------------------------------
- * SUSPEND / RESUME
+/* suspend/resume wrappers calling both usbnet and the cdc-wdm
+ * subdriver if present.
  *
- * Original code used usb_driver .suspend/.resume with pm_message_t.
- * For better compatibility with newer kernels (>=5.x/6.x) use dev_pm_ops
- * and provide device -> usb_interface wrappers to call existing
- * usb-interface based suspend/resume helpers.
- *
- * We keep the original qmi_wwan_suspend and qmi_wwan_resume (usb-interface
- * based) so behavior remains the same; but register wrapper functions
- * for the dev_pm_ops table which convert device -> usb_interface and
- * call the original routines.
+ * NOTE: cdc-wdm also supports pre/post_reset, but we cannot provide
+ * wrappers for those without adding usbnet reset support first.
  */
-
-/* Original suspend/resume kept (signature with pm_message_t) */
 static int qmi_wwan_suspend(struct usb_interface *intf, pm_message_t message)
 {
 	struct usbnet *dev = usb_get_intfdata(intf);
@@ -463,32 +470,9 @@ err:
 	return ret;
 }
 
-/* MODIFIED FOR LINUX 6.6:
- * wrapper functions for dev_pm_ops (the PM core passes struct device *)
- * Convert device -> usb_interface, then call original usb-interface
- * based suspend/resume.
- */
-static int qmi_wwan_pm_suspend(struct device *dev)
-{
-	struct usb_interface *intf = to_usb_interface(dev);
-	/* Convert to system sleep pm_message */
-	return qmi_wwan_suspend(intf, PMSG_SUSPEND);
-}
-
-static int qmi_wwan_pm_resume(struct device *dev)
-{
-	struct usb_interface *intf = to_usb_interface(dev);
-	return qmi_wwan_resume(intf);
-}
-
-/* Provide dev_pm_ops so kernel 6.x uses recommended PM hooks */
-static const struct dev_pm_ops qmi_wwan_pm_ops = {
-	SET_SYSTEM_SLEEP_PM_OPS(qmi_wwan_pm_suspend, qmi_wwan_pm_resume),
-	/* runtime PM could be added if desired */
-};
-
 /* ------------------------------------------------------------------ */
-
+/* driver info for usbnet                                              */
+/* ------------------------------------------------------------------ */
 static const struct driver_info	qmi_wwan_info = {
 	.description	= "WWAN/QMI device",
 	.flags		= FLAG_WWAN | FLAG_SEND_ZLP,
@@ -496,7 +480,7 @@ static const struct driver_info	qmi_wwan_info = {
 	.unbind		= qmi_wwan_unbind,
 	.manage_power	= qmi_wwan_manage_power,
 	.rx_fixup       = qmi_wwan_rx_fixup,
-#if 1 //Added by zhangqingyun@meigsmart.com
+#if 1 /*Added by zhangqingyun@meigsmart.com*/
 	.tx_fixup = qmi_wwan_tx_fixup,
 #endif
 };
@@ -517,7 +501,7 @@ static const struct driver_info	qmi_wwan_info = {
 	QMI_FIXED_INTF(vend, prod, 0)
 
 static const struct usb_device_id products[] = {
-#if 1 //Added by Quectel
+#if 1 /*Added by Quectel*/
 #ifndef QMI_FIXED_INTF
 /* map QMI/wwan function by a fixed interface number */
 #define QMI_FIXED_INTF(vend, prod, num) \
@@ -532,7 +516,7 @@ static const struct usb_device_id products[] = {
 	{ QMI_FIXED_INTF(0x2C7C, 0x0125, 4) }, /* Quectel EC25/EC20 R2.0 */
 	{ QMI_FIXED_INTF(0x2C7C, 0x0121, 4) }, /* Quectel EC21 */
 	{ QMI_FIXED_INTF(0x05c6, 0xf601, 5) }, /* MeigLink SLM750 SLM730 SLM750VR2.0*/
-        { QMI_FIXED_INTF(0x2dee, 0x4d22, 5) }, /*MeigLink SRM815*/
+	{ QMI_FIXED_INTF(0x2dee, 0x4d22, 5) }, /*MeigLink SRM815*/
 #endif
 	/* 1. CDC ECM like devices match on the control interface */
 	{	/* Huawei E392, E398 and possibly others sharing both device id and more... */
@@ -694,23 +678,22 @@ static int qmi_wwan_probe(struct usb_interface *intf,
 	return usbnet_probe(intf, id);
 }
 
-/* MODIFIED FOR LINUX 6.6:
- * Use modern .driver.pm = &qmi_wwan_pm_ops and do not rely on
- * .suspend/.resume fields in the top-level usb_driver structure.
- * This avoids oddities if kernel expects dev_pm_ops.
+/* qmi_wwan_driver: keep suspend/resume in usb_driver fields (original style)
+ *
+ * NOTE: some kernels prefer dev_pm_ops; if you want that change applied,
+ * tell me your kernel's 'struct usb_driver' definition or the kernel
+ * version and I will adapt to dev_pm_ops style.
  */
 static struct usb_driver qmi_wwan_driver = {
 	.name		      = "qmi_wwan_m",
 	.id_table	      = products,
 	.probe		      = qmi_wwan_probe,
 	.disconnect	      = usbnet_disconnect,
-	/* .suspend and .resume are handled through dev_pm_ops wrapper */
+	.suspend	      = qmi_wwan_suspend,  /* keep original style */
+	.resume		      = qmi_wwan_resume,   /* keep original style */
+	.reset_resume         = qmi_wwan_resume,
 	.supports_autosuspend = 1,
 	.disable_hub_initiated_lpm = 1,
-	.driver = {
-		.name = "qmi_wwan_m",
-		.pm = &qmi_wwan_pm_ops, /* MODIFIED FOR LINUX 6.6: register pm ops here */
-	},
 };
 
 module_usb_driver(qmi_wwan_driver);
